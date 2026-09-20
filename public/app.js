@@ -1,9 +1,11 @@
 /* 访谈稿匿名化映射编辑器 —— 前端逻辑
  *
  * 核心规则：
- * 1. 显式框选优先：用户框选的片段占据其字符区间，任何称呼命中与之重叠时让位；
- * 2. 最长称呼优先：称呼命中之间发生重叠时，更长的称呼优先，长度相同则先出现者优先；
- * 3. 原稿永不改动：匿名结果只体现在预览中，同时维护双向字符区间映射。
+ * 1. 显式框选最高优先：用户框选的片段占据其字符区间，称呼命中与保留原文例外与之重叠时让位；
+ * 2. 保留原文例外：称呼命中可标为例外，按原稿字符区间记录并屏蔽与之重叠的自动称呼命中，
+ *    例外自身不匿名；显式框选仍可覆盖例外；
+ * 3. 最长称呼优先：称呼命中之间发生重叠时，更长的称呼优先，长度相同则先出现者优先；
+ * 4. 原稿永不改动：匿名结果只体现在预览中，同时维护双向字符区间映射。
  */
 (function () {
   'use strict';
@@ -13,12 +15,15 @@
     text: '',          // 原稿（加载后只读）
     persons: [],       // { id, codename, aliases:[], color }
     selections: [],    // { id, start, end, personId } 显式框选
-    history: [],       // { type:'person'|'selection', ... } 用于撤销
+    exceptions: [],    // { id, start, end, personId } 保留原文例外
+    history: [],       // { type, ... } 用于撤销
     currentPreview: '',
-    currentMap: []     // { id, oStart, oEnd, pStart, pEnd, personId, explicit }
+    currentMap: [],    // { id, oStart, oEnd, pStart, pEnd, personId, explicit }
+    currentExceptions: [] // { id, start, end, personId, ranges:[{oStart,oEnd,pStart,pEnd}] }
   };
   var personSeq = 1;
   var selSeq = 1;
+  var excSeq = 1;
 
   var PALETTE = ['#ffe08a', '#b5e0a8', '#a8d8ff', '#ffc6c6', '#e3c6ff', '#ffd9a8', '#a8e6e0', '#f5c6e0'];
 
@@ -30,6 +35,7 @@
   var personForm = $('personForm'), codenameInput = $('codenameInput'), aliasesInput = $('aliasesInput');
   var personList = $('personList'), statsEl = $('stats');
   var mappingBody = document.querySelector('#mappingTable tbody');
+  var exceptionList = $('exceptionList'), exceptionEmpty = $('exceptionEmpty');
   var selPopup = $('selPopup'), popupPerson = $('popupPerson'), popupNewFields = $('popupNewFields');
   var popupCodename = $('popupCodename'), popupAlias = $('popupAlias');
   var toastEl = $('toast');
@@ -55,7 +61,7 @@
 
   // ---------- 匿名化引擎（public/anonymize.js，纯函数） ----------
   function anonymize() {
-    return Anonymizer.anonymize(state.text, state.persons, state.selections);
+    return Anonymizer.anonymize(state.text, state.persons, state.selections, state.exceptions);
   }
 
   // ---------- 渲染 ----------
@@ -67,8 +73,9 @@
         container.appendChild(document.createTextNode(text.slice(cursor, iv.start)));
       }
       var span = document.createElement('span');
-      span.className = 'frag' + (iv.explicit ? ' explicit' : '');
+      span.className = 'frag' + (iv.explicit ? ' explicit' : '') + (iv.except ? ' except' : '');
       span.dataset.mid = iv.id;
+      if (iv.except) span.dataset.eid = iv.eid;
       span.textContent = text.slice(iv.start, iv.end);
       span.style.background = iv.color;
       container.appendChild(span);
@@ -83,23 +90,34 @@
     var result = anonymize();
     state.currentPreview = result.preview;
     state.currentMap = result.map;
+    state.currentExceptions = result.exceptions;
 
-    // 原稿侧区间
-    var oIntervals = result.map.map(function (m) {
+    // 合并替换映射与例外保留区间（按起点排序，互不重叠）
+    var oIntervals = [];
+    var pIntervals = [];
+    result.map.forEach(function (m) {
       var p = personById(m.personId);
-      return { id: m.id, start: m.oStart, end: m.oEnd, explicit: m.explicit, color: p.color };
+      var color = p ? p.color : '';
+      oIntervals.push({ id: m.id, start: m.oStart, end: m.oEnd, explicit: m.explicit, color: color });
+      pIntervals.push({ id: m.id, start: m.pStart, end: m.pEnd, explicit: m.explicit, color: color });
     });
-    // 预览侧区间（同一 id，实现双向对应）
-    var pIntervals = result.map.map(function (m) {
-      var p = personById(m.personId);
-      return { id: m.id, start: m.pStart, end: m.pEnd, explicit: m.explicit, color: p.color };
+    result.exceptions.forEach(function (e) {
+      var p = personById(e.personId);
+      var color = p ? p.color : '';
+      e.ranges.forEach(function (rg) {
+        oIntervals.push({ id: 'e' + e.id, eid: e.id, start: rg.oStart, end: rg.oEnd, except: true, color: color });
+        pIntervals.push({ id: 'e' + e.id, eid: e.id, start: rg.pStart, end: rg.pEnd, except: true, color: color });
+      });
     });
+    oIntervals.sort(function (a, b) { return a.start - b.start; });
+    pIntervals.sort(function (a, b) { return a.start - b.start; });
 
     renderView(originalView, state.text, oIntervals);
     renderView(previewView, result.preview, pIntervals);
     renderPersons();
     renderMapping(result.map);
-    renderStats(result.map);
+    renderExceptions(result.exceptions);
+    renderStats(result.map, result.exceptions);
 
     $('btnUndo').disabled = state.history.length === 0;
     $('btnCopy').disabled = !state.text;
@@ -147,6 +165,13 @@
     });
   }
 
+  // 判断某个替换映射的原稿区间是否已被例外覆盖（用于禁用“保留原文”）
+  function mapCoveredByException(m) {
+    return state.exceptions.some(function (e) {
+      return e.personId === m.personId && e.start <= m.oStart && e.end >= m.oEnd;
+    });
+  }
+
   function renderMapping(map) {
     mappingBody.innerHTML = '';
     map.forEach(function (m, i) {
@@ -160,27 +185,83 @@
         '[' + m.oStart + ', ' + m.oEnd + ')',
         state.text.slice(m.oStart, m.oEnd),
         '[' + m.pStart + ', ' + m.pEnd + ')',
-        state.currentPreview.slice(m.pStart, m.pEnd)
+        state.currentPreview.slice(m.pStart, m.pEnd),
+        null // 操作
       ];
       cells.forEach(function (c, ci) {
         var td = document.createElement('td');
         if (ci === 2) {
           td.textContent = m.explicit ? '显式框选' : '称呼命中';
           td.className = m.explicit ? 'src-explicit' : 'src-alias';
+        } else if (ci === 7) {
+          var btn = document.createElement('button');
+          btn.className = 'btn-small';
+          btn.textContent = '保留原文';
+          if (m.explicit) {
+            btn.disabled = true;
+            btn.title = '显式框选保持最高优先级，不能设为例外';
+          } else if (mapCoveredByException(m)) {
+            btn.disabled = true;
+            btn.title = '该区间已在保留原文例外中';
+          } else {
+            btn.title = '将此称呼命中标记为例外：保留原文、不匿名';
+            btn.addEventListener('click', function (ev) {
+              ev.stopPropagation();
+              addException(m.personId, m.oStart, m.oEnd);
+            });
+          }
+          td.appendChild(btn);
         } else {
           td.textContent = c;
         }
         tr.appendChild(td);
       });
-      tr.addEventListener('click', function () { activate(m.id, true); });
+      tr.addEventListener('click', function () { activate(String(m.id), true); });
       mappingBody.appendChild(tr);
     });
   }
 
-  function renderStats(map) {
+  function renderExceptions(exceptions) {
+    exceptionList.innerHTML = '';
+    exceptionEmpty.classList.toggle('hidden', exceptions.length > 0);
+    exceptions.forEach(function (e) {
+      var p = personById(e.personId);
+      var li = document.createElement('li');
+      li.className = 'exception-item';
+      li.title = '点击定位原稿与预览中的对应位置';
+      li.addEventListener('click', function () { activate('e' + e.id, true); });
+
+      var frag = document.createElement('span');
+      frag.className = 'exc-frag';
+      frag.textContent = state.text.slice(e.start, e.end);
+
+      var meta = document.createElement('span');
+      meta.className = 'exc-meta';
+      meta.textContent = '来源人物：' + (p ? p.codename : '（已删除）') +
+        ' ｜ 原稿区间 [' + e.start + ', ' + e.end + ')';
+      if (!e.ranges.length) meta.textContent += ' ｜ 当前被显式框选完全覆盖';
+
+      var restore = document.createElement('button');
+      restore.className = 'btn-small exc-restore';
+      restore.textContent = '恢复匿名';
+      restore.title = '删除该例外，恢复该区间的自动称呼命中';
+      restore.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        removeException(e.id);
+      });
+
+      li.appendChild(frag);
+      li.appendChild(meta);
+      li.appendChild(restore);
+      exceptionList.appendChild(li);
+    });
+  }
+
+  function renderStats(map, exceptions) {
     var explicit = map.filter(function (m) { return m.explicit; }).length;
     statsEl.textContent = '人物 ' + state.persons.length + ' 位 ｜ 共匿名化 ' + map.length +
-      ' 处（框选 ' + explicit + ' · 称呼 ' + (map.length - explicit) + '）';
+      ' 处（框选 ' + explicit + ' · 称呼 ' + (map.length - explicit) +
+      '）｜ 保留原文例外 ' + exceptions.length + ' 处';
   }
 
   // ---------- 双向高亮 ----------
@@ -243,22 +324,86 @@
     return true;
   }
 
+  function addException(personId, start, end) {
+    if (!personById(personId)) return;
+    var dup = state.exceptions.some(function (e) {
+      return e.personId === personId && e.start === start && e.end === end;
+    });
+    if (dup) { toast('该片段已在保留原文例外中'); return; }
+    var exc = { id: excSeq++, start: start, end: end, personId: personId };
+    state.exceptions.push(exc);
+    state.history.push({ type: 'exception-add', exception: exc });
+    render();
+    toast('已标记保留原文，自动称呼命中将与此区间避让');
+  }
+
+  function removeException(id, recordHistory) {
+    var exc = null;
+    state.exceptions = state.exceptions.filter(function (e) {
+      if (e.id === id) { exc = e; return false; }
+      return true;
+    });
+    if (!exc) return;
+    if (recordHistory !== false) state.history.push({ type: 'exception-remove', exception: exc });
+    render();
+    if (recordHistory !== false) toast('已恢复匿名');
+  }
+
   function removePerson(id) {
+    var person = personById(id);
+    if (!person) return;
+    // 人物删除连同其框选与例外一并删除，整体进入撤销栈
+    var removedSels = state.selections.filter(function (s) { return s.personId === id; });
+    var removedExcs = state.exceptions.filter(function (e) { return e.personId === id; });
     state.persons = state.persons.filter(function (p) { return p.id !== id; });
     state.selections = state.selections.filter(function (s) { return s.personId !== id; });
+    state.exceptions = state.exceptions.filter(function (e) { return e.personId !== id; });
+    state.history.push({
+      type: 'person-delete',
+      person: person,
+      selections: removedSels,
+      exceptions: removedExcs
+    });
     render();
+  }
+
+  // 恢复对象时分配新的自增 id，避免与删除后新建的记录冲突
+  function reassignId(obj, seqName) {
+    var copy = { start: obj.start, end: obj.end, personId: obj.personId };
+    if (seqName === 'sel') copy.id = selSeq++;
+    else copy.id = excSeq++;
+    return copy;
   }
 
   function undo() {
     var action = state.history.pop();
     if (!action) return;
+    var i, restored;
     if (action.type === 'person') {
       state.persons = state.persons.filter(function (p) { return p.id !== action.person.id; });
       state.selections = state.selections.filter(function (s) { return s.personId !== action.person.id; });
+      state.exceptions = state.exceptions.filter(function (e) { return e.personId !== action.person.id; });
       toast('已撤销人物「' + action.person.codename + '」');
-    } else {
+    } else if (action.type === 'selection') {
       state.selections = state.selections.filter(function (s) { return s.id !== action.selection.id; });
       toast('已撤销一次框选');
+    } else if (action.type === 'exception-add') {
+      state.exceptions = state.exceptions.filter(function (e) { return e.id !== action.exception.id; });
+      toast('已撤销保留原文标记');
+    } else if (action.type === 'exception-remove') {
+      state.exceptions.push(action.exception);
+      toast('已撤销恢复匿名');
+    } else if (action.type === 'person-delete') {
+      state.persons.push(action.person);
+      for (i = 0; i < action.selections.length; i++) {
+        restored = reassignId(action.selections[i], 'sel');
+        state.selections.push(restored);
+      }
+      for (i = 0; i < action.exceptions.length; i++) {
+        restored = reassignId(action.exceptions[i], 'exc');
+        state.exceptions.push(restored);
+      }
+      toast('已恢复人物「' + action.person.codename + '」及其规则');
     }
     render();
   }
@@ -367,7 +512,14 @@
     state.text = text;
     state.persons = [];
     state.selections = [];
+    state.exceptions = [];
     state.history = [];
+    state.currentPreview = '';
+    state.currentMap = [];
+    state.currentExceptions = [];
+    personSeq = 1;
+    selSeq = 1;
+    excSeq = 1;
     inputSection.classList.add('hidden');
     editorSection.classList.remove('hidden');
     $('btnResetText').classList.remove('hidden');
@@ -375,8 +527,8 @@
   }
 
   $('btnResetText').addEventListener('click', function () {
-    if ((state.persons.length || state.selections.length) &&
-        !window.confirm('重新粘贴将清空当前所有人物规则与框选，确定继续？')) return;
+    if ((state.persons.length || state.selections.length || state.exceptions.length) &&
+        !window.confirm('重新粘贴将清空当前所有人物规则、框选与例外，确定继续？')) return;
     textInput.value = state.text;
     editorSection.classList.add('hidden');
     inputSection.classList.remove('hidden');
@@ -384,7 +536,14 @@
     state.text = '';
     state.persons = [];
     state.selections = [];
+    state.exceptions = [];
     state.history = [];
+    state.currentPreview = '';
+    state.currentMap = [];
+    state.currentExceptions = [];
+    personSeq = 1;
+    selSeq = 1;
+    excSeq = 1;
   });
 
   $('btnExample').addEventListener('click', function () {

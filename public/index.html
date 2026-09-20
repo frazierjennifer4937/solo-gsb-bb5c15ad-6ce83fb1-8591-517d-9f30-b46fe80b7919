@@ -49,7 +49,8 @@
         <ul id="personList" class="person-list"></ul>
         <div class="legend">
           <div><span class="chip chip-alias"></span> 称呼命中（最长称呼优先）</div>
-          <div><span class="chip chip-explicit"></span> 显式框选（优先级最高）</div>
+          <div><span class="chip chip-explicit"></span> 显式框选（优先级最高，可覆盖例外）</div>
+          <div><span class="chip chip-except"></span> 保留原文例外（不匿名）</div>
         </div>
         <div id="stats" class="stats"></div>
       </aside>
@@ -60,11 +61,17 @@
       <div class="mapping-wrap">
         <table id="mappingTable">
           <thead>
-            <tr><th>#</th><th>人物</th><th>来源</th><th>原稿区间</th><th>原稿片段</th><th>预览区间</th><th>预览片段</th></tr>
+            <tr><th>#</th><th>人物</th><th>来源</th><th>原稿区间</th><th>原稿片段</th><th>预览区间</th><th>预览片段</th><th>操作</th></tr>
           </thead>
           <tbody></tbody>
         </table>
       </div>
+    </section>
+
+    <section class="card">
+      <h2>保留原文例外 <span class="hint">（命中称呼但不匿名；屏蔽与该区间重叠的自动称呼命中；框选仍可覆盖例外）</span></h2>
+      <ul id="exceptionList" class="exception-list"></ul>
+      <div id="exceptionEmpty" class="exception-empty">暂无例外。在上方映射表中对“称呼命中”点击「保留原文」即可添加。</div>
     </section>
   </main>
 
