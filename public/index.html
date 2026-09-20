@@ -11,7 +11,7 @@
     <h1>访谈稿匿名化映射编辑器</h1>
     <div class="topbar-actions">
       <button id="btnExample" class="btn">加载内置示例</button>
-      <button id="btnUndo" class="btn" disabled>撤销最近规则</button>
+      <button id="btnUndo" class="btn" disabled>撤销最近操作</button>
       <button id="btnCopy" class="btn" disabled>复制匿名预览</button>
       <button id="btnResetText" class="btn btn-ghost hidden">重新粘贴原稿</button>
     </div>
@@ -47,20 +47,28 @@
           <button type="submit" class="btn btn-primary">添加人物</button>
         </form>
         <ul id="personList" class="person-list"></ul>
+
+        <h2 class="sub-title">保留原文例外</h2>
+        <div class="hint sub-hint">在映射表把称呼命中标为「保留原文」：例外区间内原文照录，并屏蔽重叠的自动称呼命中；显式框选仍可覆盖例外。</div>
+        <ul id="exceptionList" class="exception-list">
+          <li class="exception-empty">（暂无例外，去映射表标记称呼命中吧）</li>
+        </ul>
+
         <div class="legend">
           <div><span class="chip chip-alias"></span> 称呼命中（最长称呼优先）</div>
           <div><span class="chip chip-explicit"></span> 显式框选（优先级最高）</div>
+          <div><span class="chip chip-keep"></span> 保留原文例外（可被框选覆盖）</div>
         </div>
         <div id="stats" class="stats"></div>
       </aside>
     </div>
 
     <section class="card">
-      <h2 id="mappingTitle">字符区间映射表（原稿 ↔ 预览）</h2>
+      <h2 id="mappingTitle">字符区间映射表（原稿 ↔ 预览）<span class="hint">（「保留原文」可把称呼命中标为例外；点击行可定位原稿与预览对应位置）</span></h2>
       <div class="mapping-wrap">
         <table id="mappingTable">
           <thead>
-            <tr><th>#</th><th>人物</th><th>来源</th><th>原稿区间</th><th>原稿片段</th><th>预览区间</th><th>预览片段</th></tr>
+            <tr><th>#</th><th>人物</th><th>来源</th><th>原稿区间</th><th>原稿片段</th><th>预览区间</th><th>预览片段</th><th>操作</th></tr>
           </thead>
           <tbody></tbody>
         </table>
